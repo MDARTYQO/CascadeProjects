@@ -1,0 +1,101 @@
+name: Record Screen Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Website URL to record'
+        required: true
+        default: 'https://example.com'
+      duration:
+        description: 'Recording duration in seconds'
+        required: false
+        default: '120'
+      filename:
+        description: 'Video filename'
+        required: false
+        default: 'recording.webm'
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: npm install puppeteer puppeteer-screen-recorder
+    
+    - name: Record screen
+      run: |
+        node << 'EOF'
+        const puppeteer = require('puppeteer');
+        const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
+        
+        (async () => {
+          console.log('Starting Puppeteer for screen recording...');
+          
+          const browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-gpu',
+              '--use-fake-ui-for-media-stream',
+              '--use-fake-device-for-media-stream'
+            ]
+          });
+          
+          const page = await browser.newPage();
+          await page.setViewport({ width: 1920, height: 1080 });
+          
+          const recorder = new PuppeteerScreenRecorder(page, {
+            followNewTab: false,
+            fps: 30,
+            videoFrame: {
+              width: 1920,
+              height: 1080
+            },
+            aspectRatio: '16:9'
+          });
+          
+          try {
+            console.log('Navigating to: ${{ github.event.inputs.url }}');
+            await page.goto('${{ github.event.inputs.url }}', { 
+              waitUntil: 'networkidle2',
+              timeout: 30000 
+            });
+            
+            const filename = '${{ github.event.inputs.filename }}';
+            const duration = parseInt('${{ github.event.inputs.duration }}') * 1000;
+            
+            console.log(`Starting recording for ${duration / 1000} seconds...`);
+            await recorder.start(filename);
+            
+            // Wait for the specified duration
+            await new Promise(resolve => setTimeout(resolve, duration));
+            
+            await recorder.stop();
+            console.log(`Recording saved as: ${filename}`);
+          } catch (error) {
+            console.error('Error recording screen:', error);
+            process.exit(1);
+          } finally {
+            await browser.close();
+          }
+        })();
+        EOF
+    
+    - name: Upload recording as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: screen-recording
+        path: ${{ github.event.inputs.filename }}
+        retention-days: 30
