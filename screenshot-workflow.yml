@@ -1,0 +1,83 @@
+name: Screenshot Website
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Website URL to screenshot'
+        required: true
+        default: 'https://example.com'
+      filename:
+        description: 'Screenshot filename'
+        required: false
+        default: 'screenshot.png'
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install Puppeteer
+      run: npm install puppeteer
+    
+    - name: Take screenshot
+      run: |
+        node << 'EOF'
+        const puppeteer = require('puppeteer');
+        
+        (async () => {
+          console.log('Starting Puppeteer in headless mode...');
+          
+          const browser = await puppeteer.launch({
+            headless: "new", // Use new headless mode
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-dev-shm-usage',
+              '--disable-gpu'
+            ]
+          });
+          
+          const page = await browser.newPage();
+          await page.setViewport({ width: 1920, height: 1080 });
+          
+          try {
+            console.log('Navigating to: ${{ github.event.inputs.url }}');
+            await page.goto('${{ github.event.inputs.url }}', { 
+              waitUntil: 'networkidle2',
+              timeout: 30000 
+            });
+            
+            // Wait a bit for any dynamic content to load
+            await page.waitForTimeout(3000);
+            
+            const filename = '${{ github.event.inputs.filename }}';
+            await page.screenshot({ 
+              path: filename,
+              fullPage: true 
+            });
+            
+            console.log(`Screenshot saved as: ${filename}`);
+          } catch (error) {
+            console.error('Error taking screenshot:', error);
+            process.exit(1);
+          } finally {
+            await browser.close();
+          }
+        })();
+        EOF
+    
+    - name: Upload screenshot as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: website-screenshot
+        path: ${{ github.event.inputs.filename }}
+        retention-days: 30
