@@ -1,0 +1,105 @@
+name: Scheduled Website Screenshots
+
+on:
+  schedule:
+    # Run every day at 9:00 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Website URL to screenshot'
+        required: true
+        default: 'https://example.com'
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        # Multiple websites to screenshot
+        websites:
+          - url: "https://github.com"
+            filename: "github-screenshot.png"
+          - url: "https://stackoverflow.com"
+            filename: "stackoverflow-screenshot.png"
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: |
+        npm init -y
+        npm install puppeteer
+    
+    - name: Take screenshot with custom logic
+      run: |
+        node << 'EOF'
+        const puppeteer = require('puppeteer');
+        const fs = require('fs');
+        
+        (async () => {
+          const browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+          });
+          
+          const page = await browser.newPage();
+          await page.setViewport({ width: 1920, height: 1080 });
+          
+          const url = '${{ matrix.websites.url }}';
+          const filename = '${{ matrix.websites.filename }}';
+          
+          try {
+            console.log(\`Taking screenshot of: \${url}\`);
+            
+            // Navigate with longer timeout
+            await page.goto(url, { 
+              waitUntil: 'networkidle2',
+              timeout: 45000 
+            });
+            
+            // Wait for specific elements if needed
+            await page.waitForTimeout(5000);
+            
+            // Take full page screenshot
+            await page.screenshot({ 
+              path: filename,
+              fullPage: true,
+              quality: 90
+            });
+            
+            // Create metadata file
+            const metadata = {
+              url: url,
+              timestamp: new Date().toISOString(),
+              filename: filename,
+              size: fs.statSync(filename).size
+            };
+            
+            fs.writeFileSync(\`\${filename}.json\`, JSON.stringify(metadata, null, 2));
+            console.log(\`Screenshot saved: \${filename}\`);
+            
+          } catch (error) {
+            console.error(\`Error screenshotting \${url}:\`, error);
+            process.exit(1);
+          } finally {
+            await browser.close();
+          }
+        })();
+        EOF
+    
+    - name: Upload screenshots as artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: screenshots-\${{ hashFiles('*.png') }}
+        path: |
+          *.png
+          *.json
+        retention-days: 7
