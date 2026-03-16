@@ -250,7 +250,7 @@ jobs:
                   const x = Math.round((event.clientX - rect.left) * (img.naturalWidth / rect.width));
                   const y = Math.round((event.clientY - rect.top) * (img.naturalHeight / rect.height));
                   
-                  document.getElementById('clickInfo').textContent = \`Click at: X=\${x}, Y=\${y}\`;
+                  document.getElementById('clickInfo').textContent = 'Click at: X=' + x + ', Y=' + y;
                   
                   fetch('/api/click-coords', {
                     method: 'POST',
@@ -283,7 +283,7 @@ jobs:
                   coordsDiv.style.display = 'block';
                   coordsDiv.style.left = (event.clientX + 10) + 'px';
                   coordsDiv.style.top = (event.clientY - 30) + 'px';
-                  coordsDiv.textContent = \`\${x}, \${y}\`;
+                  coordsDiv.textContent = x + ', ' + y;
                 });
 
                 document.getElementById('screenshot').addEventListener('mouseleave', function() {
@@ -459,7 +459,7 @@ jobs:
 
         const PORT = process.env.PORT || 3000;
         server.listen(PORT, () => {
-          console.log(\`Remote desktop server running on port \${PORT}\`);
+          console.log('Remote desktop server running on port ' + PORT);
         });
 
         // Graceful shutdown
