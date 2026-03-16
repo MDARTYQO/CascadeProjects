@@ -1,0 +1,482 @@
+name: Remote Desktop with Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_type:
+        description: 'Desktop type'
+        required: true
+        default: 'xfce'
+        type: choice
+        options:
+          - xfce
+          - lxde
+          - gnome
+      resolution:
+        description: 'Screen resolution'
+        required: false
+        default: '1920x1080'
+      enable_audio:
+        description: 'Enable audio forwarding'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  remote-desktop:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Remote Desktop Environment
+      run: |
+        echo "🖥️ Setting up Remote Desktop Environment..."
+        
+        # Install desktop environment and RDP server
+        sudo apt-get update
+        sudo apt-get install -y \
+          xrdp \
+          xfce4 \
+          xfce4-goodies \
+          xorg \
+          dbus-x11 \
+          x11-xserver-utils
+        
+        # Configure RDP
+        sudo systemctl enable xrdp
+        sudo systemctl start xrdp
+        
+        # Create user for RDP
+        sudo useradd -m -s /bin/bash rdpuser
+        echo "rdpuser:RemoteDesktop123!" | sudo chpasswd
+        sudo usermod -aG sudo rdpuser
+        
+        # Configure XFCE as default desktop
+        echo "xfce4-session" > /home/rdpuser/.xsession
+        sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+        
+        # Configure xrdp to use XFCE
+        sudo sed -i 's/^#.*$/exec startxfce4/' /etc/xrdp/startwm.sh
+        
+        # Allow RDP through firewall
+        sudo ufw allow 3389/tcp
+        
+        echo "✅ Remote Desktop setup completed"
+
+    - name: Install additional tools
+      run: |
+        # Install browser and automation tools
+        sudo apt-get install -y \
+          firefox \
+          chromium-browser \
+          curl \
+          wget \
+          git \
+          nano \
+          htop
+        
+        # Install Node.js for web interfaces
+        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+        
+        # Create desktop shortcuts
+        mkdir -p /home/rdpuser/Desktop
+        echo '[Desktop Entry]
+        Version=1.0
+        Type=Application
+        Name=Firefox
+        Comment=Web Browser
+        Exec=firefox
+        Icon=firefox
+        Terminal=false
+        Categories=Network;WebBrowser;' > /home/rdpuser/Desktop/firefox.desktop
+        
+        echo '[Desktop Entry]
+        Version=1.0
+        Type=Application
+        Name=Terminal
+        Comment=Terminal Emulator
+        Exec=xfce4-terminal
+        Icon=utilities-terminal
+        Terminal=false
+        Categories=System;TerminalEmulator;' > /home/rdpuser/Desktop/terminal.desktop
+        
+        sudo chmod +x /home/rdpuser/Desktop/*.desktop
+        sudo chown -R rdpuser:rdpuser /home/rdpuser/Desktop
+
+    - name: Start Remote Desktop Services
+      run: |
+        # Start X server
+        export DISPLAY=:0
+        Xvfb :0 -screen 0 ${{ github.event.inputs.resolution || '1920x1080' }}x24 &
+        
+        # Start desktop environment
+        sudo -u rdpuser startxfce4 &
+        
+        # Ensure xrdp is running
+        sudo systemctl restart xrdp
+        
+        # Get RDP connection info
+        RDP_PORT=3389
+        INTERNAL_IP=$(hostname -I | awk '{print $1}')
+        
+        echo "🖥️ Remote Desktop Information:"
+        echo "📡 Internal IP: $INTERNAL_IP"
+        echo "🔌 Port: $RDP_PORT"
+        echo "👤 Username: rdpuser"
+        echo "🔐 Password: RemoteDesktop123!"
+        echo "🖥️ Desktop: ${{ github.event.inputs.desktop_type || 'xfce' }}"
+        echo "📺 Resolution: ${{ github.event.inputs.resolution || '1920x1080' }}"
+        echo ""
+        
+        # Save connection info
+        cat > rdp_info.txt << EOF
+        Remote Desktop Connection Information:
+        ===================================
+        Internal IP: $INTERNAL_IP
+        Port: $RDP_PORT
+        Username: rdpuser
+        Password: RemoteDesktop123!
+        Desktop: ${{ github.event.inputs.desktop_type || 'xfce' }}
+        Resolution: ${{ github.event.inputs.resolution || '1920x1080' }}
+        
+        Connection String: mstsc /v:$INTERNAL_IP:$RDP_PORT
+        EOF
+
+    - name: Install Tunneling Tools
+      run: |
+        # Install localtunnel for RDP tunneling
+        npm install -g localtunnel
+        
+        # Install socat for port forwarding
+        sudo apt-get install -y socat
+
+    - name: Create RDP Tunnel Server
+      run: |
+        cat > rdp-tunnel-server.js << 'EOF'
+        const express = require('express');
+        const http = require('http');
+        const { spawn } = require('child_process');
+        const fs = require('fs');
+
+        const app = express();
+        const server = http.createServer(app);
+        
+        // Serve connection info page
+        app.get('/', (req, res) => {
+          const rdpInfo = fs.readFileSync('rdp_info.txt', 'utf8');
+          res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Remote Desktop Tunnel</title>
+              <meta charset="utf-8">
+              <style>
+                body { 
+                  font-family: Arial, sans-serif; 
+                  margin: 40px; 
+                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                  color: white;
+                  min-height: 100vh;
+                }
+                .container { 
+                  max-width: 800px; 
+                  margin: 0 auto; 
+                  background: rgba(255,255,255,0.1);
+                  padding: 30px;
+                  border-radius: 15px;
+                  backdrop-filter: blur(10px);
+                }
+                .info-box { 
+                  background: rgba(255,255,255,0.2); 
+                  padding: 20px; 
+                  border-radius: 10px; 
+                  margin: 20px 0;
+                  border-left: 4px solid #00ff88;
+                }
+                .step { 
+                  background: rgba(255,255,255,0.15); 
+                  padding: 15px; 
+                  margin: 10px 0; 
+                  border-radius: 8px;
+                }
+                .highlight { 
+                  color: #00ff88; 
+                  font-weight: bold; 
+                }
+                .button {
+                  display: inline-block;
+                  background: #00ff88;
+                  color: #000;
+                  padding: 12px 24px;
+                  text-decoration: none;
+                  border-radius: 8px;
+                  font-weight: bold;
+                  margin: 10px 5px;
+                }
+                pre {
+                  background: rgba(0,0,0,0.3);
+                  padding: 15px;
+                  border-radius: 8px;
+                  overflow-x: auto;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <h1>🖥️ Remote Desktop Connection Portal</h1>
+                <p style="font-size: 18px;">Connect to your virtual desktop from anywhere!</p>
+                
+                <div class="info-box">
+                  <h2>🔐 Connection Details</h2>
+                  <pre>${rdpInfo}</pre>
+                </div>
+                
+                <div class="info-box">
+                  <h2>📋 Connection Instructions</h2>
+                  
+                  <div class="step">
+                    <h3>🪟 Windows Remote Desktop</h3>
+                    <p>Press <span class="highlight">Win + R</span>, type <span class="highlight">mstsc</span>, then enter:</p>
+                    <pre>mstsc /v:[TUNNEL_IP]:[TUNNEL_PORT]</pre>
+                  </div>
+                  
+                  <div class="step">
+                    <h3>🍎 macOS Microsoft Remote Desktop</h3>
+                    <p>Download from App Store, then add PC with:</p>
+                    <pre>PC name: [TUNNEL_IP]:[TUNNEL_PORT]</pre>
+                  </div>
+                  
+                  <div class="step">
+                    <h3>🐧 Linux Remmina</h3>
+                    <p>Create new RDP connection with:</p>
+                    <pre>Server: [TUNNEL_IP]:[TUNNEL_PORT]</pre>
+                  </div>
+                </div>
+                
+                <div class="info-box">
+                  <h2>🌐 Tunnel Options</h2>
+                  
+                  <h3>Option 1: Direct RDP Tunnel</h3>
+                  <p>Connect directly through RDP tunnel:</p>
+                  <a href="#" class="button" onclick="startRDPTunnel()">Start RDP Tunnel</a>
+                  <p id="rdp-tunnel-info" style="margin-top: 10px;"></p>
+                  
+                  <h3>Option 2: Web-based RDP</h3>
+                  <p>Use web-based RDP client:</p>
+                  <a href="#" class="button" onclick="openWebRDP()">Open Web RDP</a>
+                </div>
+                
+                <div class="info-box">
+                  <h2>🎯 What's Available</h2>
+                  <ul>
+                    <li>✅ Full desktop environment (XFCE)</li>
+                    <li>✅ Firefox browser</li>
+                    <li>✅ Terminal access</li>
+                    <li>✅ File manager</li>
+                    <li>✅ Development tools</li>
+                    <li>✅ Network access</li>
+                  </ul>
+                </div>
+                
+                <div class="info-box">
+                  <h2>⚠️ Important Notes</h2>
+                  <ul>
+                    <li>Session duration: Limited by GitHub Actions timeout</li>
+                    <li>Data persistence: Files are saved during session</li>
+                    <li>Network: Full internet access available</li>
+                    <li>Security: Use strong passwords for sensitive work</li>
+                  </ul>
+                </div>
+              </div>
+              
+              <script>
+                function startRDPTunnel() {
+                  fetch('/api/start-rdp-tunnel', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                      if (data.success) {
+                        document.getElementById('rdp-tunnel-info').innerHTML = 
+                          '<span class="highlight">RDP Tunnel Active!</span><br>' +
+                          'Connect to: <strong>' + data.url + '</strong><br>' +
+                          'Use credentials from above';
+                      }
+                    });
+                }
+                
+                function openWebRDP() {
+                  window.open('/web-rdp', '_blank');
+                }
+              </script>
+            </body>
+            </html>
+          `);
+        });
+
+        // API to start RDP tunnel
+        app.post('/api/start-rdp-tunnel', async (req, res) => {
+          try {
+            const { spawn } = require('child_process');
+            
+            // Start localtunnel for RDP port
+            const lt = spawn('lt', ['--port', '3389', '--subdomain', 'rdp-' + Date.now()]);
+            
+            setTimeout(() => {
+              res.json({ 
+                success: true, 
+                url: 'https://rdp-' + Date.now() + '.loca.lt',
+                message: 'RDP tunnel started successfully'
+              });
+            }, 5000);
+            
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        const PORT = 3000;
+        server.listen(PORT, () => {
+          console.log('🖥️ RDP Tunnel Server running on port ' + PORT);
+          console.log('📡 Ready to accept Remote Desktop connections');
+        });
+        EOF
+
+    - name: Start RDP Tunnel Services
+      run: |
+        # Start the tunnel server
+        node rdp-tunnel-server.js &
+        TUNNEL_SERVER_PID=$!
+        echo "Tunnel server started with PID: $TUNNEL_SERVER_PID"
+        
+        # Wait for server to start
+        sleep 5
+        
+        # Get multiple IP sources for tunnel password
+        echo "🔍 Detecting public IP addresses..."
+        
+        # Method 1: localtunnel API
+        LT_PASSWORD=$(curl -s https://loca.lt/mytunnelpassword 2>/dev/null || echo "")
+        
+        # Method 2: External IP services
+        IP1=$(curl -s https://api.ipify.org 2>/dev/null || echo "")
+        IP2=$(curl -s https://ipinfo.io/ip 2>/dev/null || echo "")
+        IP3=$(curl -s https://icanhazip.com 2>/dev/null || echo "")
+        
+        # Method 3: GitHub runner IP
+        RUNNER_IP=$(curl -s http://checkip.amazonaws.com 2>/dev/null || echo "")
+        
+        echo "📊 IP Detection Results:"
+        echo "Localtunnel: $LT_PASSWORD"
+        echo "IPify: $IP1"
+        echo "IPinfo: $IP2" 
+        echo "ICanHazIP: $IP3"
+        echo "AWS CheckIP: $RUNNER_IP"
+        
+        # Use the most reliable IP
+        if [ -n "$RUNNER_IP" ]; then
+            TUNNEL_PASSWORD="$RUNNER_IP"
+        elif [ -n "$IP1" ]; then
+            TUNNEL_PASSWORD="$IP1"
+        elif [ -n "$LT_PASSWORD" ]; then
+            TUNNEL_PASSWORD="$LT_PASSWORD"
+        else
+            TUNNEL_PASSWORD="auto-detected"
+        fi
+        
+        echo "🔐 Using tunnel password: $TUNNEL_PASSWORD"
+        
+        # Start localtunnel for the web interface
+        TIMESTAMP=$(date +%s)
+        echo "🚀 Starting localtunnel..."
+        
+        # Try multiple tunnel methods
+        echo "Method 1: Standard localtunnel"
+        lt --port 3000 --subdomain rdp-portal-$TIMESTAMP &
+        LT_PID=$!
+        
+        # Wait and check if tunnel is working
+        sleep 15
+        
+        # Test the tunnel
+        TUNNEL_URL="https://rdp-portal-$TIMESTAMP.loca.lt"
+        if curl -s "$TUNNEL_URL" > /dev/null; then
+            echo "✅ Tunnel is working!"
+        else
+            echo "⚠️ Tunnel might not be working, trying alternative..."
+            kill $LT_PID 2>/dev/null
+            
+            # Alternative: Use different subdomain
+            lt --port 3000 &
+            ALT_LT_PID=$!
+            LT_PID=$ALT_LT_PID
+            sleep 10
+        fi
+        
+        echo "Localtunnel started with PID: $LT_PID"
+        
+        # Display access information
+        echo ""
+        echo "🖥️ Remote Desktop Portal is accessible at:"
+        echo "🔗 $TUNNEL_URL"
+        echo "🔐 Tunnel Password: $TUNNEL_PASSWORD"
+        echo ""
+        echo "📋 Instructions:"
+        echo "1. Click the link above"
+        echo "2. Enter tunnel password: $TUNNEL_PASSWORD"
+        echo "3. If password fails, try these alternatives:"
+        echo "   - $IP1"
+        echo "   - $IP2" 
+        echo "   - $IP3"
+        echo "4. Choose your connection method"
+        echo "5. Connect using Remote Desktop client"
+        echo ""
+        echo "� Login Credentials:"
+        echo "   Username: rdpuser"
+        echo "   Password: RemoteDesktop123!"
+        echo ""
+        echo "� Troubleshooting:"
+        echo "- If tunnel password fails, try the IP addresses above"
+        echo "- Make sure to use https:// not http://"
+        echo "- Wait 10-15 seconds for tunnel to initialize"
+        echo "- Try refreshing the page if it doesn't load"
+        echo ""
+        echo "⏰ Session will end when workflow times out"
+        
+        # Save access info
+        echo "$TUNNEL_URL" > portal_url.txt
+        echo "Tunnel Password: $TUNNEL_PASSWORD" > tunnel_password.txt
+        echo "Alternative IPs:" > alternative_ips.txt
+        echo "$IP1" >> alternative_ips.txt
+        echo "$IP2" >> alternative_ips.txt
+        echo "$IP3" >> alternative_ips.txt
+        echo "$RUNNER_IP" >> alternative_ips.txt
+        
+        # Keep processes running
+        wait $TUNNEL_SERVER_PID
+
+    - name: Upload connection information
+      uses: actions/upload-artifact@v4
+      with:
+        name: rdp-connection-info
+        path: |
+          rdp_info.txt
+          portal_url.txt
+          tunnel_password.txt
+          alternative_ips.txt
+        retention-days: 1
+
+    - name: Keep Remote Desktop alive
+      run: |
+        echo "🖥️ Remote Desktop is now accessible!"
+        echo "🔗 Portal: $(cat portal_url.txt)"
+        echo "🔐 Password: $(cat tunnel_password.txt)"
+        echo ""
+        echo "💡 Tips:"
+        echo "- Use Windows Remote Desktop (mstsc)"
+        echo "- Or macOS Microsoft Remote Desktop"
+        echo "- Or Linux Remmina"
+        echo ""
+        echo "⏰ Session active until workflow timeout"
+        sleep 600

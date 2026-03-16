@@ -1,0 +1,461 @@
+name: AnyDesk Remote Desktop with Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_type:
+        description: 'Desktop environment'
+        required: true
+        default: 'xfce'
+        type: choice
+        options:
+          - xfce
+          - lxde
+          - gnome
+      anydesk_password:
+        description: 'AnyDesk password (leave blank for auto-generated)'
+        required: false
+      resolution:
+        description: 'Screen resolution'
+        required: false
+        default: '1920x1080'
+
+jobs:
+  anydesk-remote:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Desktop Environment
+      run: |
+        echo "🖥️ Setting up desktop environment for AnyDesk..."
+        
+        # Install desktop environment
+        sudo apt-get update
+        sudo apt-get install -y \
+          xfce4 \
+          xfce4-goodies \
+          xorg \
+          dbus-x11 \
+          x11-xserver-utils \
+          pulseaudio \
+          alsa-utils
+        
+        # Install additional tools
+        sudo apt-get install -y \
+          firefox \
+          curl \
+          wget \
+          git \
+          nano \
+          htop \
+          unzip
+        
+        echo "✅ Desktop environment installed"
+
+    - name: Install AnyDesk
+      run: |
+        echo "📥 Installing AnyDesk..."
+        
+        # Download AnyDesk
+        wget https://download.anydesk.com/anydesk_6.3.0-1_amd64.deb -O anydesk.deb
+        
+        # Install AnyDesk
+        sudo dpkg -i anydesk.deb || sudo apt-get install -f -y
+        
+        # Configure AnyDesk for unattended access
+        sudo systemctl enable anydesk
+        sudo systemctl start anydesk
+        
+        # Generate password if not provided
+        if [ -z "${{ github.event.inputs.anydesk_password }}" ]; then
+          ANYDESK_PASS=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-10)
+        else
+          ANYDESK_PASS="${{ github.event.inputs.anydesk_password }}"
+        fi
+        
+        echo "🔐 AnyDesk password: $ANYDESK_PASS"
+        
+        # Set AnyDesk password
+        echo "$ANYDESK_PASS" | anydesk --set-password
+        
+        # Get AnyDesk ID
+        sleep 5
+        ANYDESK_ID=$(anydesk --get-id 2>/dev/null || echo "generating...")
+        
+        echo "📋 AnyDesk Information:"
+        echo "🆔 AnyDesk ID: $ANYDESK_ID"
+        echo "🔐 Password: $ANYDESK_PASS"
+        echo "🖥️ Desktop: ${{ github.event.inputs.desktop_type }}"
+        echo "📺 Resolution: ${{ github.event.inputs.resolution }}"
+        
+        # Save connection info
+        cat > anydesk_info.txt << EOF
+        AnyDesk Connection Information:
+        ============================
+        AnyDesk ID: $ANYDESK_ID
+        Password: $ANYDESK_PASS
+        Desktop: ${{ github.event.inputs.desktop_type }}
+        Resolution: ${{ github.event.inputs.resolution }}
+        
+        Connection Steps:
+        1. Open AnyDesk on your computer
+        2. Enter ID: $ANYDESK_ID
+        3. Use password: $ANYDESK_PASS
+        4. Enjoy remote desktop!
+        EOF
+
+    - name: Start Desktop Environment
+      run: |
+        # Start X server
+        export DISPLAY=:0
+        Xvfb :0 -screen 0 ${{ github.event.inputs.resolution || '1920x1080' }}x24 &
+        
+        # Start desktop environment
+        sudo -u runner startxfce4 &
+        
+        # Start pulseaudio for sound
+        pulseaudio --start &
+        
+        # Wait for desktop to initialize
+        sleep 10
+        
+        echo "🖥️ Desktop environment started"
+
+    - name: Install Tunneling Tools
+      run: |
+        # Install localtunnel
+        npm install -g localtunnel
+        
+        # Create AnyDesk tunnel management page
+        cat > anydesk-tunnel.js << 'EOF'
+        const express = require('express');
+        const http = require('http');
+        const { spawn, exec } = require('child_process');
+        const fs = require('fs');
+
+        const app = express();
+        const server = http.createServer(app);
+        
+        // Serve connection page
+        app.get('/', (req, res) => {
+          const anydeskInfo = fs.readFileSync('anydesk_info.txt', 'utf8');
+          res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>AnyDesk Remote Desktop</title>
+              <meta charset="utf-8">
+              <style>
+                body { 
+                  font-family: Arial, sans-serif; 
+                  margin: 40px; 
+                  background: linear-gradient(135deg, #ff6b6b 0%, #4ecdc4 100%);
+                  color: white;
+                  min-height: 100vh;
+                }
+                .container { 
+                  max-width: 800px; 
+                  margin: 0 auto; 
+                  background: rgba(255,255,255,0.1);
+                  padding: 30px;
+                  border-radius: 15px;
+                  backdrop-filter: blur(10px);
+                }
+                .info-box { 
+                  background: rgba(255,255,255,0.2); 
+                  padding: 20px; 
+                  border-radius: 10px; 
+                  margin: 20px 0;
+                  border-left: 4px solid #00ff88;
+                }
+                .step { 
+                  background: rgba(255,255,255,0.15); 
+                  padding: 15px; 
+                  margin: 10px 0; 
+                  border-radius: 8px;
+                }
+                .highlight { 
+                  color: #00ff88; 
+                  font-weight: bold; 
+                  font-size: 18px;
+                }
+                .button {
+                  display: inline-block;
+                  background: #00ff88;
+                  color: #000;
+                  padding: 12px 24px;
+                  text-decoration: none;
+                  border-radius: 8px;
+                  font-weight: bold;
+                  margin: 10px 5px;
+                }
+                .status {
+                  padding: 10px;
+                  border-radius: 5px;
+                  margin: 10px 0;
+                  font-weight: bold;
+                }
+                .status.active { background: #28a745; }
+                .status.inactive { background: #dc3545; }
+                pre {
+                  background: rgba(0,0,0,0.3);
+                  padding: 15px;
+                  border-radius: 8px;
+                  overflow-x: auto;
+                  font-size: 14px;
+                }
+                .logo {
+                  font-size: 48px;
+                  text-align: center;
+                  margin: 20px 0;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="logo">🖥️</div>
+                <h1>AnyDesk Remote Desktop</h1>
+                <p style="font-size: 18px;">Connect to your virtual desktop with AnyDesk!</p>
+                
+                <div class="info-box">
+                  <h2>🔐 Connection Details</h2>
+                  <pre>${anydeskInfo}</pre>
+                </div>
+                
+                <div class="info-box">
+                  <h2>📥 How to Connect</h2>
+                  
+                  <div class="step">
+                    <h3>Step 1: Install AnyDesk</h3>
+                    <p>Download from <a href="https://anydesk.com/download" style="color: #00ff88;">anydesk.com</a></p>
+                  </div>
+                  
+                  <div class="step">
+                    <h3>Step 2: Enter AnyDesk ID</h3>
+                    <p>Open AnyDesk and enter the ID shown above</p>
+                  </div>
+                  
+                  <div class="step">
+                    <h3>Step 3: Enter Password</h3>
+                    <p>Use the password provided above when prompted</p>
+                  </div>
+                  
+                  <div class="step">
+                    <h3>Step 4: Enjoy!</h3>
+                    <p>You now have full control of the virtual desktop</p>
+                  </div>
+                </div>
+                
+                <div class="info-box">
+                  <h2>🎯 What's Available</h2>
+                  <ul>
+                    <li>✅ Full desktop environment (XFCE)</li>
+                    <li>✅ AnyDesk remote control</li>
+                    <li>✅ File transfer</li>
+                    <li>✅ Clipboard sharing</li>
+                    <li>✅ Firefox browser</li>
+                    <li>✅ Terminal access</li>
+                    <li>✅ Sound support</li>
+                  </ul>
+                </div>
+                
+                <div class="info-box">
+                  <h2>🌐 Connection Options</h2>
+                  
+                  <h3>Option 1: Direct AnyDesk Connection</h3>
+                  <p>Use the AnyDesk ID above for direct connection</p>
+                  
+                  <h3>Option 2: Web-based Monitoring</h3>
+                  <button onclick="checkStatus()" class="button">Check AnyDesk Status</button>
+                  <div id="status-info" style="margin-top: 10px;"></div>
+                </div>
+                
+                <div class="info-box">
+                  <h2>⚡ AnyDesk Advantages</h2>
+                  <ul>
+                    <li>🚀 High performance remote desktop</li>
+                    <li>🔄 Real-time collaboration</li>
+                    <li>📁 File transfer capabilities</li>
+                    <li>🔒 End-to-end encryption</li>
+                    <li>🌍 Works from anywhere</li>
+                    <li>📱 Mobile apps available</li>
+                  </ul>
+                </div>
+                
+                <div class="info-box">
+                  <h2>⚠️ Important Notes</h2>
+                  <ul>
+                    <li>Session duration: Limited by GitHub Actions timeout</li>
+                    <li>Network: Full internet access available</li>
+                    <li>Performance: Optimized for remote desktop</li>
+                    <li>Security: Use secure password for sensitive work</li>
+                  </ul>
+                </div>
+              </div>
+              
+              <script>
+                function checkStatus() {
+                  fetch('/api/anydesk-status')
+                    .then(res => res.json())
+                    .then(data => {
+                      const statusDiv = document.getElementById('status-info');
+                      if (data.running) {
+                        statusDiv.innerHTML = '<div class="status active">✅ AnyDesk is running</div>';
+                      } else {
+                        statusDiv.innerHTML = '<div class="status inactive">❌ AnyDesk is not running</div>';
+                      }
+                    });
+                }
+                
+                // Auto-check status
+                setTimeout(checkStatus, 2000);
+              </script>
+            </body>
+            </html>
+          `);
+        });
+
+        // API to check AnyDesk status
+        app.get('/api/anydesk-status', (req, res) => {
+          exec('pgrep anydesk', (error, stdout, stderr) => {
+            res.json({ 
+              running: !error,
+              pid: error ? null : stdout.trim()
+            });
+          });
+        });
+
+        // API to restart AnyDesk
+        app.post('/api/restart-anydesk', (req, res) => {
+          exec('sudo systemctl restart anydesk', (error, stdout, stderr) => {
+            res.json({ 
+              success: !error,
+              message: error ? stderr : 'AnyDesk restarted successfully'
+            });
+          });
+        });
+
+        const PORT = 3000;
+        server.listen(PORT, () => {
+          console.log('🖥️ AnyDesk Tunnel Server running on port ' + PORT);
+          console.log('📡 Ready for AnyDesk connections');
+        });
+        EOF
+
+    - name: Start AnyDesk and Tunnel Services
+      run: |
+        # Ensure AnyDesk is running
+        sudo systemctl restart anydesk
+        sleep 5
+        
+        # Get final AnyDesk ID
+        ANYDESK_ID=$(anydesk --get-id 2>/dev/null)
+        echo "🆔 Final AnyDesk ID: $ANYDESK_ID"
+        
+        # Update connection info with final ID
+        sed -i "s/AnyDesk ID: .*/AnyDesk ID: $ANYDESK_ID/" anydesk_info.txt
+        
+        # Start tunnel server
+        node anydesk-tunnel.js &
+        TUNNEL_SERVER_PID=$!
+        echo "Tunnel server started with PID: $TUNNEL_SERVER_PID"
+        
+        # Wait for server to start
+        sleep 5
+        
+        # Get tunnel password
+        TUNNEL_PASSWORD=$(curl -s https://loca.lt/mytunnelpassword 2>/dev/null || echo "")
+        
+        # Backup IP detection
+        IP1=$(curl -s https://api.ipify.org 2>/dev/null || echo "")
+        IP2=$(curl -s https://ipinfo.io/ip 2>/dev/null || echo "")
+        
+        # Use most reliable IP
+        if [ -n "$IP1" ]; then
+            TUNNEL_PASSWORD="$IP1"
+        elif [ -n "$TUNNEL_PASSWORD" ]; then
+            TUNNEL_PASSWORD="$TUNNEL_PASSWORD"
+        else
+            TUNNEL_PASSWORD="auto-detected"
+        fi
+        
+        echo "🔐 Tunnel password: $TUNNEL_PASSWORD"
+        
+        # Start localtunnel
+        TIMESTAMP=$(date +%s)
+        lt --port 3000 --subdomain anydesk-$TIMESTAMP &
+        LT_PID=$!
+        
+        echo "Localtunnel started with PID: $LT_PID"
+        
+        # Wait for tunnel to initialize
+        sleep 15
+        
+        # Test tunnel
+        TUNNEL_URL="https://anydesk-$TIMESTAMP.loca.lt"
+        if curl -s "$TUNNEL_URL" > /dev/null; then
+            echo "✅ Tunnel is working!"
+        else
+            echo "⚠️ Tunnel might not be working"
+        fi
+        
+        # Display connection information
+        echo ""
+        echo "🖥️ AnyDesk Remote Desktop is ready!"
+        echo ""
+        echo "🔗 Management Portal: $TUNNEL_URL"
+        echo "🔐 Tunnel Password: $TUNNEL_PASSWORD"
+        echo ""
+        echo "📋 AnyDesk Connection Details:"
+        echo "🆔 AnyDesk ID: $ANYDESK_ID"
+        echo "🔐 Password: $(grep 'Password:' anydesk_info.txt | cut -d' ' -f2)"
+        echo ""
+        echo "📱 Connection Steps:"
+        echo "1. Open AnyDesk on your device"
+        echo "2. Enter ID: $ANYDESK_ID"
+        echo "3. Use password when prompted"
+        echo "4. Enjoy full remote desktop!"
+        echo ""
+        echo "🌐 Alternative: Use management portal for status"
+        echo "🔗 $TUNNEL_URL (password: $TUNNEL_PASSWORD)"
+        echo ""
+        echo "⏰ Session active until workflow timeout"
+        
+        # Save access info
+        echo "$TUNNEL_URL" > portal_url.txt
+        echo "Tunnel Password: $TUNNEL_PASSWORD" > tunnel_password.txt
+        echo "AnyDesk ID: $ANYDESK_ID" > anydesk_id.txt
+        
+        # Keep processes running
+        wait $TUNNEL_SERVER_PID
+
+    - name: Upload connection information
+      uses: actions/upload-artifact@v4
+      with:
+        name: anydesk-connection-info
+        path: |
+          anydesk_info.txt
+          portal_url.txt
+          tunnel_password.txt
+          anydesk_id.txt
+        retention-days: 1
+
+    - name: Keep AnyDesk alive
+      run: |
+        echo "🖥️ AnyDesk Remote Desktop is active!"
+        echo "🆔 AnyDesk ID: $(cat anydesk_id.txt)"
+        echo "🔗 Portal: $(cat portal_url.txt)"
+        echo "🔐 Password: $(cat tunnel_password.txt)"
+        echo ""
+        echo "💡 AnyDesk Advantages:"
+        echo "- High performance remote desktop"
+        echo "- File transfer capabilities"
+        echo "- Works on all devices"
+        echo "- No port forwarding needed"
+        echo "- Secure and encrypted"
+        echo ""
+        echo "⏰ Session active until workflow timeout"
+        sleep 600
