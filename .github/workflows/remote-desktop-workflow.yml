@@ -459,7 +459,13 @@ jobs:
 
         const PORT = process.env.PORT || 3000;
         server.listen(PORT, () => {
-          console.log('Remote desktop server running on port ' + PORT);
+          console.log('=== Remote Desktop Server Architecture ===');
+        console.log('Server Location: GitHub Actions Virtual Machine');
+        console.log('Your Location: Your local computer');
+        console.log('Connection: Your Browser → Internet → Localtunnel → GitHub VM');
+        console.log('Browser: Puppeteer running on GitHub VM');
+        console.log('Filtering: Your local filters can affect the connection');
+        console.log('=============================================');
         });
 
         // Graceful shutdown
