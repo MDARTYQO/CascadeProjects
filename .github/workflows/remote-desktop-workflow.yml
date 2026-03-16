@@ -482,8 +482,13 @@ jobs:
         # Wait for server to start
         sleep 5
         
-        # Start localtunnel (free alternative to ngrok)
-        lt --port 3000 --subdomain remote-desktop-$(date +%s) &
+        # Get tunnel password (public IP)
+        TUNNEL_PASSWORD=$(curl -s https://loca.lt/mytunnelpassword)
+        echo "Tunnel password: $TUNNEL_PASSWORD"
+        
+        # Start localtunnel with custom subdomain
+        TIMESTAMP=$(date +%s)
+        lt --port 3000 --subdomain remote-desktop-$TIMESTAMP &
         LT_PID=$!
         
         echo "Localtunnel started with PID: $LT_PID"
@@ -491,20 +496,23 @@ jobs:
         # Wait a moment for localtunnel to initialize
         sleep 10
         
-        # Get the public URL from localtunnel output
+        # Display access information
         echo "🌐 Remote Desktop Interface is accessible at:"
-        echo "🔗 https://remote-desktop-$(date +%s).loca.lt"
+        echo "🔗 https://remote-desktop-$TIMESTAMP.loca.lt"
         echo ""
-        echo "📋 Instructions:"
-        echo "1. Click the link above to open the interface"
-        echo "2. If you see a warning page, click 'Continue to site'"
-        echo "3. Use 'Start Browser' to begin"
-        echo "4. The interface will remain active for this session"
+        echo "� Tunnel Password: $TUNNEL_PASSWORD"
+        echo ""
+        echo "� Instructions:"
+        echo "1. Click the link above"
+        echo "2. Enter the tunnel password when prompted"
+        echo "3. Click 'Continue to site'"
+        echo "4. Use 'Start Browser' to begin"
         echo ""
         echo "⏰ The session will end when the workflow times out"
         
-        # Save the URL for reference
-        echo "https://remote-desktop-$(date +%s).loca.lt" > public_url.txt
+        # Save URLs and password for reference
+        echo "https://remote-desktop-$TIMESTAMP.loca.lt" > public_url.txt
+        echo "Tunnel Password: $TUNNEL_PASSWORD" > tunnel_password.txt
         
         # Keep the processes running
         wait $SERVER_PID
@@ -556,6 +564,13 @@ jobs:
       with:
         name: public-url
         path: public_url.txt
+        retention-days: 1
+
+    - name: Upload tunnel password as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tunnel-password
+        path: tunnel_password.txt
         retention-days: 1
 
     - name: Keep session alive
