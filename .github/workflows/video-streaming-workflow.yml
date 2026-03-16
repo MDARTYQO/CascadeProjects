@@ -1,0 +1,641 @@
+name: Video Streaming Remote Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'start'
+        type: choice
+        options:
+          - start
+          - stop
+          - navigate
+          - click
+          - type
+      url:
+        description: 'URL to navigate to'
+        required: false
+        default: 'https://example.com'
+      x:
+        description: 'X coordinate for click'
+        required: false
+      y:
+        description: 'Y coordinate for click'
+        required: false
+      text:
+        description: 'Text to type'
+        required: false
+      selector:
+        description: 'CSS selector for element interaction'
+        required: false
+
+jobs:
+  video-streaming:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: |
+        npm init -y
+        npm install puppeteer express socket.io redis ffmpeg-static
+
+    - name: Create video streaming server
+      run: |
+        cat > video-server.js << 'EOF'
+        const express = require('express');
+        const http = require('http');
+        const socketIo = require('socket.io');
+        const puppeteer = require('puppeteer');
+        const redis = require('redis');
+        const { spawn } = require('child_process');
+        const fs = require('fs');
+
+        const app = express();
+        const server = http.createServer(app);
+        const io = socketIo(server);
+        
+        let browser = null;
+        let page = null;
+        let ffmpegProcess = null;
+        let isStreaming = false;
+
+        // Redis client
+        const redisClient = redis.createClient({
+          host: 'localhost',
+          port: 6379
+        });
+
+        redisClient.on('error', (err) => console.log('Redis Error:', err));
+
+        // Serve static files
+        app.use(express.static('public'));
+        app.use(express.json());
+
+        // HTML interface with video streaming
+        app.get('/', (req, res) => {
+          res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Video Streaming Remote Desktop</title>
+              <style>
+                body { 
+                  font-family: Arial, sans-serif; 
+                  margin: 20px; 
+                  background: #1a1a1a; 
+                  color: white;
+                }
+                .container { max-width: 1200px; margin: 0 auto; }
+                .controls { 
+                  background: #2a2a2a; 
+                  padding: 20px; 
+                  border-radius: 8px; 
+                  margin-bottom: 20px; 
+                }
+                .video-container { 
+                  background: #2a2a2a; 
+                  padding: 20px; 
+                  border-radius: 8px; 
+                  text-align: center;
+                }
+                #video-stream { 
+                  max-width: 100%; 
+                  border: 2px solid #444; 
+                  border-radius: 8px;
+                  cursor: crosshair;
+                  background: #000;
+                }
+                .control-group { margin: 10px 0; }
+                input, button, select { 
+                  margin: 5px; 
+                  padding: 10px; 
+                  border-radius: 4px;
+                  border: 1px solid #555;
+                  background: #333;
+                  color: white;
+                }
+                button { 
+                  background: #007bff; 
+                  color: white; 
+                  border: none; 
+                  cursor: pointer; 
+                }
+                button:hover { background: #0056b3; }
+                button:disabled { background: #666; cursor: not-allowed; }
+                .status { 
+                  padding: 10px; 
+                  border-radius: 4px; 
+                  margin: 10px 0; 
+                }
+                .status.connected { background: #28a745; }
+                .status.disconnected { background: #dc3545; }
+                .status.streaming { background: #ffc107; color: #000; }
+                .coordinates { 
+                  position: absolute; 
+                  background: rgba(0,0,0,0.9); 
+                  color: white; 
+                  padding: 4px 8px; 
+                  border-radius: 4px; 
+                  font-size: 12px; 
+                  pointer-events: none; 
+                  display: none; 
+                  z-index: 1000;
+                }
+                .video-overlay {
+                  position: relative;
+                  display: inline-block;
+                }
+                .stream-info {
+                  background: #333;
+                  padding: 10px;
+                  border-radius: 4px;
+                  margin: 10px 0;
+                  font-family: monospace;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <h1>🎥 Video Streaming Remote Desktop</h1>
+                
+                <div id="status" class="status disconnected">Status: Disconnected</div>
+                
+                <div class="controls">
+                  <h3>🎮 Browser Controls</h3>
+                  <div class="control-group">
+                    <button onclick="startBrowser()">Start Browser</button>
+                    <button onclick="stopBrowser()">Stop Browser</button>
+                    <button onclick="startStreaming()">Start Video Stream</button>
+                    <button onclick="stopStreaming()">Stop Video Stream</button>
+                  </div>
+                  
+                  <div class="control-group">
+                    <input type="text" id="url" placeholder="Enter URL" value="https://example.com" style="width: 300px;">
+                    <button onclick="navigate()">Navigate</button>
+                  </div>
+                  
+                  <div class="control-group">
+                    <input type="text" id="selector" placeholder="CSS selector (e.g., #button)" style="width: 200px;">
+                    <button onclick="clickElement()">Click Element</button>
+                  </div>
+                  
+                  <div class="control-group">
+                    <input type="text" id="text" placeholder="Text to type" style="width: 200px;">
+                    <button onclick="typeText()">Type Text</button>
+                  </div>
+                </div>
+                
+                <div class="video-container">
+                  <h3>📺 Live Video Stream (Click to interact)</h3>
+                  <div class="stream-info" id="stream-info">Stream: Not started</div>
+                  <div class="video-overlay">
+                    <video id="video-stream" autoplay muted></video>
+                    <div id="coordinates" class="coordinates"></div>
+                  </div>
+                  <div id="click-info" style="margin-top: 10px; color: #ccc;">Click on video to interact</div>
+                </div>
+              </div>
+
+              <script src="/socket.io/socket.io.js"></script>
+              <script>
+                const socket = io();
+                let videoStream = null;
+
+                socket.on('connect', () => {
+                  updateStatus('connected');
+                  console.log('Connected to server');
+                });
+
+                socket.on('disconnect', () => {
+                  updateStatus('disconnected');
+                  console.log('Disconnected from server');
+                });
+
+                socket.on('stream-started', (data) => {
+                  updateStatus('streaming');
+                  document.getElementById('stream-info').textContent = 'Stream: Active (' + data.resolution + ')';
+                  console.log('Video stream started');
+                });
+
+                socket.on('stream-stopped', () => {
+                  updateStatus('connected');
+                  document.getElementById('stream-info').textContent = 'Stream: Stopped';
+                  const video = document.getElementById('video-stream');
+                  video.srcObject = null;
+                  if (videoStream) {
+                    videoStream.getTracks().forEach(track => track.stop());
+                  }
+                });
+
+                socket.on('video-frame', (data) => {
+                  // Handle video frame if needed
+                });
+
+                function updateStatus(status) {
+                  const statusEl = document.getElementById('status');
+                  statusEl.className = 'status ' + status;
+                  const statusText = {
+                    'connected': 'Connected',
+                    'disconnected': 'Disconnected', 
+                    'streaming': 'Streaming Active'
+                  };
+                  statusEl.textContent = 'Status: ' + (statusText[status] || status);
+                }
+
+                function startBrowser() {
+                  fetch('/api/browser/start', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                function stopBrowser() {
+                  fetch('/api/browser/stop', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                function startStreaming() {
+                  fetch('/api/stream/start', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                      if (data.success) {
+                        // Start video stream viewing
+                        const video = document.getElementById('video-stream');
+                        video.src = data.streamUrl;
+                      }
+                    });
+                }
+
+                function stopStreaming() {
+                  fetch('/api/stream/stop', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                function navigate() {
+                  const url = document.getElementById('url').value;
+                  fetch('/api/navigate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                  })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                function clickElement() {
+                  const selector = document.getElementById('selector').value;
+                  fetch('/api/click', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ selector })
+                  })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                function typeText() {
+                  const text = document.getElementById('text').value;
+                  fetch('/api/type', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                  })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                }
+
+                // Handle video clicks
+                document.getElementById('video-stream').addEventListener('click', function(event) {
+                  const video = event.target;
+                  const rect = video.getBoundingClientRect();
+                  const x = Math.round((event.clientX - rect.left) * (video.videoWidth / rect.width));
+                  const y = Math.round((event.clientY - rect.top) * (video.videoHeight / rect.height));
+                  
+                  document.getElementById('click-info').textContent = 'Click at: X=' + x + ', Y=' + y;
+                  
+                  fetch('/api/click-coords', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ x, y })
+                  })
+                    .then(res => res.json())
+                    .then(data => console.log(data));
+                });
+
+                // Show coordinates on hover
+                document.getElementById('video-stream').addEventListener('mousemove', function(event) {
+                  const video = event.target;
+                  const rect = video.getBoundingClientRect();
+                  const x = Math.round((event.clientX - rect.left) * (video.videoWidth / rect.width));
+                  const y = Math.round((event.clientY - rect.top) * (video.videoHeight / rect.height));
+                  
+                  const coordsDiv = document.getElementById('coordinates');
+                  coordsDiv.style.display = 'block';
+                  coordsDiv.style.left = (event.clientX + 10) + 'px';
+                  coordsDiv.style.top = (event.clientY - 30) + 'px';
+                  coordsDiv.textContent = x + ', ' + y;
+                });
+
+                document.getElementById('video-stream').addEventListener('mouseleave', function() {
+                  document.getElementById('coordinates').style.display = 'none';
+                });
+              </script>
+            </body>
+            </html>
+          `);
+        });
+
+        // API Routes
+        app.post('/api/browser/start', async (req, res) => {
+          try {
+            if (!browser) {
+              browser = await puppeteer.launch({
+                headless: true,
+                args: [
+                  '--no-sandbox',
+                  '--disable-setuid-sandbox',
+                  '--disable-dev-shm-usage',
+                  '--disable-gpu',
+                  '--remote-debugging-port=9222'
+                ]
+              });
+              page = await browser.newPage();
+              await page.setViewport({ width: 1920, height: 1080 });
+              
+              io.emit('browserStatus', { status: 'started' });
+              res.json({ success: true, message: 'Browser started' });
+            } else {
+              res.json({ success: false, message: 'Browser already running' });
+            }
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/browser/stop', async (req, res) => {
+          try {
+            if (browser) {
+              await browser.close();
+              browser = null;
+              page = null;
+              
+              io.emit('browserStatus', { status: 'stopped' });
+              res.json({ success: true, message: 'Browser stopped' });
+            } else {
+              res.json({ success: false, message: 'Browser not running' });
+            }
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/stream/start', async (req, res) => {
+          try {
+            if (!page) {
+              return res.status(400).json({ success: false, message: 'Browser not running' });
+            }
+
+            if (isStreaming) {
+              return res.status(400).json({ success: false, message: 'Already streaming' });
+            }
+
+            // Start FFmpeg to capture screen and stream
+            ffmpegProcess = spawn('ffmpeg', [
+              '-f', 'x11grab',
+              '-r', '30',
+              '-s', '1920x1080',
+              '-i', ':99',
+              '-c:v', 'libx264',
+              '-preset', 'ultrafast',
+              '-tune', 'zerolatency',
+              '-f', 'mpegts',
+              'pipe:1'
+            ]);
+
+            isStreaming = true;
+            io.emit('stream-started', { resolution: '1920x1080' });
+            
+            res.json({ 
+              success: true, 
+              message: 'Stream started',
+              streamUrl: '/stream.mpegts'
+            });
+
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/stream/stop', async (req, res) => {
+          try {
+            if (ffmpegProcess) {
+              ffmpegProcess.kill();
+              ffmpegProcess = null;
+            }
+            
+            isStreaming = false;
+            io.emit('stream-stopped');
+            
+            res.json({ success: true, message: 'Stream stopped' });
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        // Stream endpoint
+        app.get('/stream.mpegts', (req, res) => {
+          if (!ffmpegProcess) {
+            return res.status(404).send('Stream not active');
+          }
+
+          res.writeHead(200, {
+            'Content-Type': 'video/mp2t',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
+
+          ffmpegProcess.stdout.pipe(res);
+        });
+
+        app.post('/api/navigate', async (req, res) => {
+          try {
+            if (!page) {
+              return res.status(400).json({ success: false, message: 'Browser not running' });
+            }
+            
+            const { url } = req.body;
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            
+            res.json({ success: true, message: 'Navigated to ' + url });
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/click', async (req, res) => {
+          try {
+            if (!page) {
+              return res.status(400).json({ success: false, message: 'Browser not running' });
+            }
+            
+            const { selector } = req.body;
+            await page.waitForSelector(selector, { timeout: 5000 });
+            await page.click(selector);
+            
+            res.json({ success: true, message: 'Clicked element: ' + selector });
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/click-coords', async (req, res) => {
+          try {
+            if (!page) {
+              return res.status(400).json({ success: false, message: 'Browser not running' });
+            }
+            
+            const { x, y } = req.body;
+            await page.mouse.click(x, y);
+            
+            res.json({ success: true, message: 'Clicked at coordinates: ' + x + ', ' + y });
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        app.post('/api/type', async (req, res) => {
+          try {
+            if (!page) {
+              return res.status(400).json({ success: false, message: 'Browser not running' });
+            }
+            
+            const { text } = req.body;
+            await page.keyboard.type(text);
+            
+            res.json({ success: true, message: 'Typed text: ' + text });
+          } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+          }
+        });
+
+        // WebSocket connection handling
+        io.on('connection', (socket) => {
+          console.log('Client connected:', socket.id);
+          
+          socket.on('disconnect', () => {
+            console.log('Client disconnected:', socket.id);
+          });
+        });
+
+        const PORT = process.env.PORT || 3000;
+        server.listen(PORT, () => {
+          console.log('=== Video Streaming Remote Desktop ===');
+          console.log('Server Location: GitHub Actions Virtual Machine');
+          console.log('Stream Type: Video (bypasses image filters)');
+          console.log('Connection: Your Browser → Video Stream → GitHub VM');
+          console.log('Browser: Puppeteer with video output');
+          console.log('Advantage: No image filtering!');
+          console.log('=======================================');
+        });
+
+        // Graceful shutdown
+        process.on('SIGTERM', async () => {
+          console.log('Shutting down...');
+          if (ffmpegProcess) {
+            ffmpegProcess.kill();
+          }
+          if (browser) {
+            await browser.close();
+          }
+          process.exit(0);
+        });
+        EOF
+
+    - name: Install FFmpeg for video streaming
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg xvfb
+
+    - name: Start video streaming server and tunnel
+      run: |
+        # Start virtual display
+        export DISPLAY=:99
+        Xvfb :99 -screen 0 1920x1080x24 &
+        
+        # Start the server in background
+        node video-server.js &
+        SERVER_PID=$!
+        echo "Video server started with PID: $SERVER_PID"
+        
+        # Wait for server to start
+        sleep 5
+        
+        # Get tunnel password
+        TUNNEL_PASSWORD=$(curl -s https://loca.lt/mytunnelpassword)
+        echo "Tunnel password: $TUNNEL_PASSWORD"
+        
+        # Start localtunnel
+        TIMESTAMP=$(date +%s)
+        lt --port 3000 --subdomain video-desktop-$TIMESTAMP &
+        LT_PID=$!
+        
+        echo "Localtunnel started with PID: $LT_PID"
+        
+        # Wait for tunnel to initialize
+        sleep 10
+        
+        # Display access information
+        echo "🎥 Video Streaming Remote Desktop is accessible at:"
+        echo "🔗 https://video-desktop-$TIMESTAMP.loca.lt"
+        echo "🔐 Tunnel Password: $TUNNEL_PASSWORD"
+        echo ""
+        echo "📋 Instructions:"
+        echo "1. Click the link above"
+        echo "2. Enter tunnel password"
+        echo "3. Start Browser → Start Video Stream"
+        echo "4. Enjoy video streaming (bypasses image filters!)"
+        echo ""
+        echo "⚡ Advantage: Live video instead of screenshots!"
+        
+        # Save access info
+        echo "https://video-desktop-$TIMESTAMP.loca.lt" > public_url.txt
+        echo "Tunnel Password: $TUNNEL_PASSWORD" > tunnel_password.txt
+        
+        # Keep processes running
+        wait $SERVER_PID
+
+    - name: Upload access information
+      uses: actions/upload-artifact@v4
+      with:
+        name: video-access
+        path: |
+          public_url.txt
+          tunnel_password.txt
+        retention-days: 1
+
+    - name: Keep session alive
+      run: |
+        echo "🎥 Video streaming active..."
+        echo "This bypasses image filters completely!"
+        sleep 300
