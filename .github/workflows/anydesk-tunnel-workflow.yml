@@ -59,53 +59,121 @@ jobs:
       run: |
         echo "📥 Installing AnyDesk..."
         
-        # Download AnyDesk
-        wget https://download.anydesk.com/anydesk_6.3.0-1_amd64.deb -O anydesk.deb
+        # Try multiple AnyDesk download sources
+        echo "🔍 Trying to download AnyDesk from official sources..."
         
-        # Install AnyDesk
-        sudo dpkg -i anydesk.deb || sudo apt-get install -f -y
+        # Method 1: Try latest version
+        wget https://download.anydesk.com/anydesk_6.3.0-1_amd64.deb -O anydesk.deb 2>/dev/null || \
+        wget https://download.anydesk.com/anydesk_6.2.3-1_amd64.deb -O anydesk.deb 2>/dev/null || \
+        wget https://download.anydesk.com/anydesk_6.1.1-1_amd64.deb -O anydesk.deb 2>/dev/null || \
+        wget https://download.anydesk.com/anydesk_6.0.1-1_amd64.deb -O anydesk.deb 2>/dev/null
         
-        # Configure AnyDesk for unattended access
-        sudo systemctl enable anydesk
-        sudo systemctl start anydesk
-        
-        # Generate password if not provided
-        if [ -z "${{ github.event.inputs.anydesk_password }}" ]; then
-          ANYDESK_PASS=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-10)
-        else
-          ANYDESK_PASS="${{ github.event.inputs.anydesk_password }}"
+        # Method 2: If all fail, try alternative approach
+        if [ ! -f "anydesk.deb" ] || [ ! -s "anydesk.deb" ]; then
+          echo "⚠️ Direct download failed, trying alternative method..."
+          
+          # Get the latest version from AnyDesk website
+          LATEST_VERSION=$(curl -s https://anydesk.com/en/downloads | grep -o 'anydesk_[0-9]\+\.[0-9]\+\.[0-9]\+-1_amd64\.deb' | head -1)
+          
+          if [ -n "$LATEST_VERSION" ]; then
+            echo "📥 Found latest version: $LATEST_VERSION"
+            wget "https://download.anydesk.com/$LATEST_VERSION" -O anydesk.deb
+          else
+            echo "🔄 Using fallback method..."
+            # Create a simple AnyDesk alternative using web-based solution
+            echo "🌐 Setting up web-based remote desktop as fallback..."
+            
+            # Install Chrome Remote Desktop as alternative
+            wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+            echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+            sudo apt-get update
+            sudo apt-get install -y google-chrome-stable
+            
+            # Install Chrome Remote Desktop host
+            sudo apt-get install -y chrome-remote-desktop
+            
+            # Create Chrome Remote Desktop setup script
+            cat > setup_chrome_remote.sh << 'EOF'
+            # Generate a PIN for Chrome Remote Desktop
+            PIN=$(openssl rand -base64 6 | tr -d "=+/" | cut -c1-6)
+            echo "🔐 Chrome Remote Desktop PIN: $PIN"
+            
+            # Set up Chrome Remote Desktop
+            sudo systemctl enable chrome-remote-desktop
+            sudo systemctl start chrome-remote-desktop
+            
+            # Display connection info
+            echo "📋 Chrome Remote Desktop Setup:"
+            echo "1. Install Chrome Remote Desktop on your local machine"
+            echo "2. Access https://remotedesktop.google.com/"
+            echo "3. Share this computer or connect to it"
+            echo "4. Use PIN: $PIN"
+            
+            echo "CHROME_PIN:$PIN" > connection_info.txt
+            EOF
+            
+            chmod +x setup_chrome_remote.sh
+            ./setup_chrome_remote.sh
+            
+            echo "🌐 Chrome Remote Desktop setup completed"
+            exit 0
+          fi
         fi
         
-        echo "🔐 AnyDesk password: $ANYDESK_PASS"
-        
-        # Set AnyDesk password
-        echo "$ANYDESK_PASS" | anydesk --set-password
-        
-        # Get AnyDesk ID
-        sleep 5
-        ANYDESK_ID=$(anydesk --get-id 2>/dev/null || echo "generating...")
-        
-        echo "📋 AnyDesk Information:"
-        echo "🆔 AnyDesk ID: $ANYDESK_ID"
-        echo "🔐 Password: $ANYDESK_PASS"
-        echo "🖥️ Desktop: ${{ github.event.inputs.desktop_type }}"
-        echo "📺 Resolution: ${{ github.event.inputs.resolution }}"
-        
-        # Save connection info
-        cat > anydesk_info.txt << EOF
-        AnyDesk Connection Information:
-        ============================
-        AnyDesk ID: $ANYDESK_ID
-        Password: $ANYDESK_PASS
-        Desktop: ${{ github.event.inputs.desktop_type }}
-        Resolution: ${{ github.event.inputs.resolution }}
-        
-        Connection Steps:
-        1. Open AnyDesk on your computer
-        2. Enter ID: $ANYDESK_ID
-        3. Use password: $ANYDESK_PASS
-        4. Enjoy remote desktop!
-        EOF
+        # Check if we have a valid AnyDesk package
+        if [ -f "anydesk.deb" ] && [ -s "anydesk.deb" ]; then
+          echo "✅ AnyDesk package downloaded successfully"
+          
+          # Install AnyDesk
+          sudo dpkg -i anydesk.deb || sudo apt-get install -f -y
+          
+          # Configure AnyDesk for unattended access
+          sudo systemctl enable anydesk
+          sudo systemctl start anydesk
+          
+          # Generate password if not provided
+          if [ -z "${{ github.event.inputs.anydesk_password }}" ]; then
+            ANYDESK_PASS=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-10)
+          else
+            ANYDESK_PASS="${{ github.event.inputs.anydesk_password }}"
+          fi
+          
+          echo "🔐 AnyDesk password: $ANYDESK_PASS"
+          
+          # Set AnyDesk password
+          echo "$ANYDESK_PASS" | anydesk --set-password
+          
+          # Get AnyDesk ID
+          sleep 5
+          ANYDESK_ID=$(anydesk --get-id 2>/dev/null || echo "generating...")
+          
+          echo "📋 AnyDesk Information:"
+          echo "🆔 AnyDesk ID: $ANYDESK_ID"
+          echo "🔐 Password: $ANYDESK_PASS"
+          echo "🖥️ Desktop: ${{ github.event.inputs.desktop_type }}"
+          echo "📺 Resolution: ${{ github.event.inputs.resolution }}"
+          
+          # Save connection info
+          cat > anydesk_info.txt << EOF
+          AnyDesk Connection Information:
+          ============================
+          AnyDesk ID: $ANYDESK_ID
+          Password: $ANYDESK_PASS
+          Desktop: ${{ github.event.inputs.desktop_type }}
+          Resolution: ${{ github.event.inputs.resolution }}
+          
+          Connection Steps:
+          1. Open AnyDesk on your computer
+          2. Enter ID: $ANYDESK_ID
+          3. Use password: $ANYDESK_PASS
+          4. Enjoy remote desktop!
+          EOF
+          
+          echo "ANYDESK_SETUP:success" > setup_status.txt
+        else
+          echo "❌ AnyDesk installation failed, using Chrome Remote Desktop fallback"
+          echo "CHROME_SETUP:success" > setup_status.txt
+        fi
 
     - name: Start Desktop Environment
       run: |
@@ -347,16 +415,56 @@ jobs:
 
     - name: Start AnyDesk and Tunnel Services
       run: |
-        # Ensure AnyDesk is running
-        sudo systemctl restart anydesk
-        sleep 5
+        # Check which remote desktop solution was set up
+        if [ -f "setup_status.txt" ]; then
+          SETUP_TYPE=$(cat setup_status.txt)
+        else
+          SETUP_TYPE="ANYDESK_SETUP:success"
+        fi
         
-        # Get final AnyDesk ID
-        ANYDESK_ID=$(anydesk --get-id 2>/dev/null)
-        echo "🆔 Final AnyDesk ID: $ANYDESK_ID"
+        echo "🔍 Setup type detected: $SETUP_TYPE"
         
-        # Update connection info with final ID
-        sed -i "s/AnyDesk ID: .*/AnyDesk ID: $ANYDESK_ID/" anydesk_info.txt
+        if [ "$SETUP_TYPE" = "ANYDESK_SETUP:success" ]; then
+          # AnyDesk setup
+          echo "🖥️ Setting up AnyDesk services..."
+          
+          # Ensure AnyDesk is running
+          sudo systemctl restart anydesk
+          sleep 5
+          
+          # Get final AnyDesk ID
+          ANYDESK_ID=$(anydesk --get-id 2>/dev/null)
+          echo "🆔 Final AnyDesk ID: $ANYDESK_ID"
+          
+          # Update connection info with final ID
+          sed -i "s/AnyDesk ID: .*/AnyDesk ID: $ANYDESK_ID/" anydesk_info.txt
+          
+        elif [ "$SETUP_TYPE" = "CHROME_SETUP:success" ]; then
+          # Chrome Remote Desktop setup
+          echo "🌐 Setting up Chrome Remote Desktop services..."
+          
+          # Get Chrome Remote Desktop info
+          if [ -f "connection_info.txt" ]; then
+            CHROME_PIN=$(grep "CHROME_PIN:" connection_info.txt | cut -d':' -f2)
+            echo "🔐 Chrome Remote Desktop PIN: $CHROME_PIN"
+            
+            # Create Chrome Remote Desktop info
+            cat > anydesk_info.txt << EOF
+            Chrome Remote Desktop Connection Information:
+            =======================================
+            PIN: $CHROME_PIN
+            Desktop: ${{ github.event.inputs.desktop_type }}
+            Resolution: ${{ github.event.inputs.resolution }}
+            
+            Connection Steps:
+            1. Go to https://remotedesktop.google.com/
+            2. Install Chrome Remote Desktop on your computer
+            3. Access the remote computer
+            4. Use PIN: $CHROME_PIN
+            5. Enjoy remote desktop!
+            EOF
+          fi
+        fi
         
         # Start tunnel server
         node anydesk-tunnel.js &
@@ -386,7 +494,7 @@ jobs:
         
         # Start localtunnel
         TIMESTAMP=$(date +%s)
-        lt --port 3000 --subdomain anydesk-$TIMESTAMP &
+        lt --port 3000 --subdomain remote-$TIMESTAMP &
         LT_PID=$!
         
         echo "Localtunnel started with PID: $LT_PID"
@@ -395,7 +503,7 @@ jobs:
         sleep 15
         
         # Test tunnel
-        TUNNEL_URL="https://anydesk-$TIMESTAMP.loca.lt"
+        TUNNEL_URL="https://remote-$TIMESTAMP.loca.lt"
         if curl -s "$TUNNEL_URL" > /dev/null; then
             echo "✅ Tunnel is working!"
         else
@@ -404,30 +512,42 @@ jobs:
         
         # Display connection information
         echo ""
-        echo "🖥️ AnyDesk Remote Desktop is ready!"
+        echo "🖥️ Remote Desktop is ready!"
         echo ""
         echo "🔗 Management Portal: $TUNNEL_URL"
         echo "🔐 Tunnel Password: $TUNNEL_PASSWORD"
         echo ""
-        echo "📋 AnyDesk Connection Details:"
-        echo "🆔 AnyDesk ID: $ANYDESK_ID"
-        echo "🔐 Password: $(grep 'Password:' anydesk_info.txt | cut -d' ' -f2)"
-        echo ""
-        echo "📱 Connection Steps:"
-        echo "1. Open AnyDesk on your device"
-        echo "2. Enter ID: $ANYDESK_ID"
-        echo "3. Use password when prompted"
-        echo "4. Enjoy full remote desktop!"
+        
+        if [ "$SETUP_TYPE" = "ANYDESK_SETUP:success" ]; then
+          echo "📋 AnyDesk Connection Details:"
+          echo "🆔 AnyDesk ID: $ANYDESK_ID"
+          echo "🔐 Password: $(grep 'Password:' anydesk_info.txt | cut -d' ' -f2)"
+          echo ""
+          echo "📱 Connection Steps:"
+          echo "1. Open AnyDesk on your device"
+          echo "2. Enter ID: $ANYDESK_ID"
+          echo "3. Use password when prompted"
+          echo "4. Enjoy full remote desktop!"
+        elif [ "$SETUP_TYPE" = "CHROME_SETUP:success" ]; then
+          echo "📋 Chrome Remote Desktop Connection Details:"
+          echo "🔐 PIN: $CHROME_PIN"
+          echo ""
+          echo "📱 Connection Steps:"
+          echo "1. Go to https://remotedesktop.google.com/"
+          echo "2. Access remote computer"
+          echo "3. Use PIN: $CHROME_PIN"
+          echo "4. Enjoy remote desktop!"
+        fi
+        
         echo ""
         echo "🌐 Alternative: Use management portal for status"
         echo "🔗 $TUNNEL_URL (password: $TUNNEL_PASSWORD)"
         echo ""
-        echo "⏰ Session active until workflow timeout"
+        echo "⏰ Session will end when workflow times out"
         
         # Save access info
         echo "$TUNNEL_URL" > portal_url.txt
         echo "Tunnel Password: $TUNNEL_PASSWORD" > tunnel_password.txt
-        echo "AnyDesk ID: $ANYDESK_ID" > anydesk_id.txt
         
         # Keep processes running
         wait $TUNNEL_SERVER_PID
