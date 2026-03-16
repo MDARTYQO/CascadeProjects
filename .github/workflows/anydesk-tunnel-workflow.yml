@@ -139,6 +139,8 @@ jobs:
                 echo "✅ Successfully downloaded latest version"
               fi
             fi
+          else
+            echo "❌ Could not detect latest version from website"
           fi
         fi
         
@@ -280,7 +282,7 @@ jobs:
         PIN=$(openssl rand -base64 6 | tr -d "=+/" | cut -c1-6)
         echo "🔐 Chrome Remote Desktop PIN: $PIN"
         
-        cat > anydesk_info.txt << EOF
+        cat > anydesk_info.txt << 'EOF'
         Chrome Remote Desktop Connection Information:
         =======================================
         PIN: $PIN
