@@ -59,33 +59,40 @@ jobs:
       run: |
         echo "📥 Installing AnyDesk..."
         
-        # Install dependencies first
-        echo "🔧 Installing required dependencies..."
+        # Install dependencies first (Ubuntu 24.04 compatible)
+        echo "🔧 Installing required dependencies for Ubuntu 24.04..."
         sudo apt-get update
+        
+        # Install Ubuntu 24.04 compatible dependencies
         sudo apt-get install -y \
           libgtk-3-0 \
-          libgdk-pixbuf2.0-0 \
+          libgdk-pixbuf-2.0-0 \
           libxss1 \
-          libgconf-2-4 \
-          libasound2 \
+          libasound2t64 \
           libxtst6 \
           libxrandr2 \
           libxcomposite1 \
           libxcursor1 \
           libxdamage1 \
           libxi6 \
-          libxtst6 \
           libnss3 \
           libcups2 \
           libxfixes3 \
           libgbm1 \
           libxrender1 \
           libcairo-gobject2 \
-          libgdk-pixbuf2.0-0 \
-          libgtk-3-0 \
           libpango-1.0-0 \
           libglib2.0-0 \
-          libatspi2.0-0
+          libatspi2.0-0 \
+          libdrm2 \
+          libxkbcommon0 \
+          libwayland-client0 \
+          libwayland-cursor0 \
+          libxcb-xinerama0 \
+          libxcb-cursor0 \
+          libxkbfile1
+        
+        echo "✅ Dependencies installed successfully"
         
         # Try multiple AnyDesk download sources
         echo "🔍 Trying to download AnyDesk from official sources..."
@@ -144,8 +151,8 @@ jobs:
           echo "📥 Installing Chrome Remote Desktop..."
           
           # Add Google repository
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-archive-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           
           # Install Chrome and Chrome Remote Desktop
@@ -264,9 +271,9 @@ jobs:
         chrome_fallback:
         echo "🌐 Setting up Chrome Remote Desktop fallback..."
         
-        # Install Chrome Remote Desktop
-        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+        # Install Chrome Remote Desktop with Ubuntu 24.04 compatibility
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-archive-keyring.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-archive-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable chrome-remote-desktop
         
