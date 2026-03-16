@@ -59,10 +59,8 @@ jobs:
       run: |
         npm init -y
         npm install puppeteer express socket.io redis
-        # Install ngrok for tunneling
-        wget https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip
-        unzip ngrok-v3-stable-linux-amd64.zip
-        chmod +x ngrok
+        # Install localtunnel (free alternative to ngrok)
+        npm install -g localtunnel
 
     - name: Create remote desktop server
       run: |
@@ -429,7 +427,7 @@ jobs:
               io.emit('screenshot', { image: base64Image });
             }, 1000);
             
-            res.json({ success: true, message: \`Clicked at coordinates: \${x}, \${y}\` });
+            res.json({ success: true, message: 'Clicked at coordinates: ' + x + ', ' + y });
           } catch (error) {
             res.status(500).json({ success: false, error: error.message });
           }
@@ -484,35 +482,29 @@ jobs:
         # Wait for server to start
         sleep 5
         
-        # Start ngrok tunnel
-        ./ngrok http 3000 --log=stdout &
-        NGROK_PID=$!
+        # Start localtunnel (free alternative to ngrok)
+        lt --port 3000 --subdomain remote-desktop-$(date +%s) &
+        LT_PID=$!
         
-        echo "Ngrok started with PID: $NGROK_PID"
+        echo "Localtunnel started with PID: $LT_PID"
         
-        # Wait a moment for ngrok to initialize
+        # Wait a moment for localtunnel to initialize
         sleep 10
         
-        # Get the public URL
-        PUBLIC_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*\.ngrok[^"]*' | head -1)
+        # Get the public URL from localtunnel output
+        echo "🌐 Remote Desktop Interface is accessible at:"
+        echo "🔗 https://remote-desktop-$(date +%s).loca.lt"
+        echo ""
+        echo "📋 Instructions:"
+        echo "1. Click the link above to open the interface"
+        echo "2. If you see a warning page, click 'Continue to site'"
+        echo "3. Use 'Start Browser' to begin"
+        echo "4. The interface will remain active for this session"
+        echo ""
+        echo "⏰ The session will end when the workflow times out"
         
-        if [ -n "$PUBLIC_URL" ]; then
-          echo "🌐 Remote Desktop Interface is now accessible at:"
-          echo "🔗 $PUBLIC_URL"
-          echo ""
-          echo "📋 Instructions:"
-          echo "1. Click the link above to open the interface"
-          echo "2. Use 'Start Browser' to begin"
-          echo "3. The interface will remain active for this session"
-          echo ""
-          echo "⏰ The session will end when the workflow times out"
-          
-          # Save the URL to an artifact for later access
-          echo "$PUBLIC_URL" > public_url.txt
-        else
-          echo "❌ Failed to get public URL from ngrok"
-          echo "Check the ngrok logs above"
-        fi
+        # Save the URL for reference
+        echo "https://remote-desktop-$(date +%s).loca.lt" > public_url.txt
         
         # Keep the processes running
         wait $SERVER_PID
